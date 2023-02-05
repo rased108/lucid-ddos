@@ -1,0 +1,1 @@
+.\venv\Scripts\python lucid_dataset_parser.py --preprocess_folder .\sample-dataset\

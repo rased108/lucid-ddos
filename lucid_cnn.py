@@ -86,7 +86,8 @@ def Conv2DModel(model_name,input_shape,kernel_col, kernels=64,kernel_rows=3,lear
 
 def compileModel(model,lr):
     # optimizer = SGD(learning_rate=lr, momentum=0.0, decay=0.0, nesterov=False)
-    optimizer = Adam(learning_rate=lr, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
+    #optimizer = Adam(learning_rate=lr, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
+    optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=lr, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
     model.compile(loss='binary_crossentropy', optimizer=optimizer,metrics=['accuracy'])  # here we specify the loss function
 
 def main(argv):
@@ -149,9 +150,9 @@ def main(argv):
 
             # get the time_window and the flow_len from the filename
             train_file = glob.glob(dataset_folder + "/*" + '-train.hdf5')[0]
-            filename = train_file.split('/')[-1].strip()
-            time_window = int(filename.split('-')[0].strip().replace('t', ''))
-            max_flow_len = int(filename.split('-')[1].strip().replace('n', ''))
+            filename = train_file.split('\\')[-1].strip()
+            time_window =int(filename.split('-')[0].strip().replace('t', ''))
+            max_flow_len =int(filename.split('-')[1].strip().replace('n', ''))
             dataset_name = filename.split('-')[2].strip()
 
             print ("\nCurrent dataset folder: ", dataset_folder)
@@ -334,7 +335,7 @@ def report_results(Y_true, Y_pred, packets, model_name, data_source, prediction_
         row = {'Model': model_name, 'Time': '{:04.3f}'.format(prediction_time), 'Packets': packets,
                'Samples': Y_pred.shape[0], 'DDOS%': ddos_rate, 'Accuracy': "N/A", 'F1Score': "N/A",
                'TPR': "N/A", 'FPR': "N/A", 'TNR': "N/A", 'FNR': "N/A", 'Source': data_source}
-    pprint.pprint(row, sort_dicts=False)
+    pprint.pprint(row  )
     writer.writerow(row)
 
 if __name__ == "__main__":

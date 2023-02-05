@@ -1,0 +1,1 @@
+.\venv\Scripts\python lucid_cnn.py --train .\sample-dataset\

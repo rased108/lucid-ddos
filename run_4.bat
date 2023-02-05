@@ -1,0 +1,1 @@
+.\venv\Scripts\python lucid_cnn.py --predict .\sample-dataset\ --model .\output\10t-10n-SYN2020-LUCID.h5

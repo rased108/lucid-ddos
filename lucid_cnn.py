@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#Sample commands
+# Sample commands
 # Training: python3 lucid_cnn.py --train ./sample-dataset/  --epochs 100 -cv 5
 # Testing: python3  lucid_cnn.py --predict ./sample-dataset/ --model ./sample-dataset/10t-10n-SYN2020-LUCID.h5
 
@@ -24,54 +24,83 @@ import random as rn
 import os
 import csv
 import pprint
+
+from pyspark.sql import SparkSession
+
 from util_functions import *
+
 # Seed Random Numbers
-os.environ['PYTHONHASHSEED']=str(SEED)
+os.environ['PYTHONHASHSEED'] = str(SEED)
 np.random.seed(SEED)
 rn.seed(SEED)
 config = tf.compat.v1.ConfigProto(inter_op_parallelism_threads=1)
 
-from tensorflow.keras.optimizers import Adam,SGD
+from tensorflow.keras.optimizers import Adam, SGD
 from tensorflow.keras.layers import Input, Dense, Activation, Flatten, Conv2D
 from tensorflow.keras.layers import Dropout, GlobalMaxPooling2D
 from tensorflow.keras.models import Model, Sequential, load_model, save_model
-from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
+# from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
 from sklearn.utils import shuffle
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from tensorflow.keras.wrappers.scikit_learn import KerasClassifier
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from lucid_dataset_parser import *
+from pyspark import SparkContext, SparkConf
+from tensorflow import keras
+from skdist.distribute.search import DistGridSearchCV
 
 import tensorflow.keras.backend as K
+import findspark
+import os
+import sys
+
+# os.environ['PYSPARK_PYTHON'] = os.path.abspath('venv/Scripts/python.exe')
+# os.environ['PYSPARK_DRIVER_PYTHON'] = os.path.abspath('venv/Scripts/python.exe')
+
+findspark.init()
+
 tf.random.set_seed(SEED)
 K.set_image_data_format('channels_last')
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 config.gpu_options.allow_growth = True  # dynamically grow the memory used on the GPU
-#config.log_device_placement = True  # to log device placement (on which device the operation ran)
+# config.log_device_placement = True  # to log device placement (on which device the operation ran)
+
+spark = (
+    SparkSession
+    .builder.master('spark://127.0.0.1:7077').appName('Lucid').config(
+        "spark.driver.extraJavaOptions",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED",
+    ).getOrCreate()
+)
+sc = spark.sparkContext
 
 OUTPUT_FOLDER = "./output/"
 
-VAL_HEADER = ['Model', 'Samples', 'Accuracy', 'F1Score', 'Hyper-parameters','Validation Set']
-PREDICT_HEADER = ['Model', 'Time', 'Packets', 'Samples', 'DDOS%', 'Accuracy', 'F1Score', 'TPR', 'FPR','TNR', 'FNR', 'Source']
+VAL_HEADER = ['Model', 'Samples', 'Accuracy', 'F1Score', 'Hyper-parameters', 'Validation Set']
+PREDICT_HEADER = ['Model', 'Time', 'Packets', 'Samples', 'DDOS%', 'Accuracy', 'F1Score', 'TPR', 'FPR', 'TNR', 'FNR',
+                  'Source']
 
 # hyperparameters
 PATIENCE = 10
 DEFAULT_EPOCHS = 1000
 hyperparamters = {
-    "learning_rate": [0.1,0.01,0.001],
-    "batch_size": [1024,2048],
-    "kernels": [1,2,4,8,16,32,64],
-    "regularization" : ['l1','l2'],
-    "dropout" : [0.5,0.7,0.9]
+    "learning_rate": [0.1, 0.01, 0.001],
+    "batch_size": [1024, 2048],
+    "kernels": [1, 2, 4, 8, 16, 32, 64],
+    "regularization": ['l1', 'l2'],
+    "dropout": [0.5, 0.7, 0.9]
 }
 
-def Conv2DModel(model_name,input_shape,kernel_col, kernels=64,kernel_rows=3,learning_rate=0.01,regularization=None,dropout=None):
+
+def Conv2DModel(model_name, input_shape, kernel_col, kernels=64, kernel_rows=3, learning_rate=0.01, regularization=None,
+                dropout=None):
     K.clear_session()
 
     model = Sequential(name=model_name)
     regularizer = regularization
 
-    model.add(Conv2D(kernels, (kernel_rows,kernel_col), strides=(1, 1), input_shape=input_shape, kernel_regularizer=regularizer, name='conv0'))
+    model.add(Conv2D(kernels, (kernel_rows, kernel_col), strides=(1, 1), input_shape=input_shape,
+                     kernel_regularizer=regularizer, name='conv0'))
     if dropout != None and type(dropout) == float:
         model.add(Dropout(dropout))
     model.add(Activation('relu'))
@@ -84,11 +113,15 @@ def Conv2DModel(model_name,input_shape,kernel_col, kernels=64,kernel_rows=3,lear
     compileModel(model, learning_rate)
     return model
 
-def compileModel(model,lr):
+
+def compileModel(model, lr):
     # optimizer = SGD(learning_rate=lr, momentum=0.0, decay=0.0, nesterov=False)
-    #optimizer = Adam(learning_rate=lr, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
-    optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=lr, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
-    model.compile(loss='binary_crossentropy', optimizer=optimizer,metrics=['accuracy'])  # here we specify the loss function
+    # optimizer = Adam(learning_rate=lr, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
+    optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=lr, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0,
+                                                amsgrad=False)
+    model.compile(loss='binary_crossentropy', optimizer=optimizer,
+                  metrics=['accuracy'])  # here we specify the loss function
+
 
 def main(argv):
     help_string = 'Usage: python3 lucid_cnn.py --train <dataset_folder> -e <epocs>'
@@ -133,8 +166,8 @@ def main(argv):
         os.mkdir(OUTPUT_FOLDER)
 
     if args.train is not None:
-        subfolders = glob.glob(args.train[0] +"/*/")
-        if len(subfolders) == 0: # for the case in which the is only one folder, and this folder is args.dataset_folder[0]
+        subfolders = glob.glob(args.train[0] + "/*/")
+        if len(subfolders) == 0:  # for the case in which the is only one folder, and this folder is args.dataset_folder[0]
             subfolders = [args.train[0] + "/"]
         else:
             subfolders = sorted(subfolders)
@@ -151,19 +184,23 @@ def main(argv):
             # get the time_window and the flow_len from the filename
             train_file = glob.glob(dataset_folder + "/*" + '-train.hdf5')[0]
             filename = train_file.split('\\')[-1].strip()
-            time_window =int(filename.split('-')[0].strip().replace('t', ''))
-            max_flow_len =int(filename.split('-')[1].strip().replace('n', ''))
+            time_window = int(filename.split('-')[0].strip().replace('t', ''))
+            max_flow_len = int(filename.split('-')[1].strip().replace('n', ''))
             dataset_name = filename.split('-')[2].strip()
 
-            print ("\nCurrent dataset folder: ", dataset_folder)
+            print("\nCurrent dataset folder: ", dataset_folder)
 
             model_name = dataset_name + "-LUCID"
-            keras_classifier = KerasClassifier(build_fn=Conv2DModel,model_name=model_name, input_shape=X_train.shape[1:],kernel_col=X_train.shape[2])
-            rnd_search_cv = GridSearchCV(keras_classifier, hyperparamters, cv=args.cross_validation if args.cross_validation > 1 else [(slice(None), slice(None))], refit=True, return_train_score=True)
+            keras_classifier = KerasClassifier(build_fn=Conv2DModel, model_name=model_name,
+                                               input_shape=X_train.shape[1:], kernel_col=X_train.shape[2])
+            cv = args.cross_validation if args.cross_validation > 1 else [(slice(None), slice(None))]
+            rnd_search_cv = DistGridSearchCV(keras_classifier, hyperparamters, sc=sc, cv=cv, refit=True,
+                                             return_train_score=True)
 
             es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=PATIENCE)
             best_model_filename = OUTPUT_FOLDER + str(time_window) + 't-' + str(max_flow_len) + 'n-' + model_name
-            mc = ModelCheckpoint(best_model_filename + '.h5', monitor='val_accuracy', mode='max', verbose=1, save_best_only=True)
+            mc = ModelCheckpoint(best_model_filename + '.h5', monitor='val_accuracy', mode='max', verbose=1,
+                                 save_best_only=True)
             # With K-Fold cross-validation, the validation set is only used for early stopping
             rnd_search_cv.fit(X_train, Y_train, epochs=args.epochs, validation_data=(X_val, Y_val), callbacks=[es, mc])
 
@@ -175,7 +212,7 @@ def main(argv):
             best_model.save(best_model_filename + '.h5')
 
             # Alternatively, to save time, one could set refit=False and load the best model from the filesystem to test its performance
-            #best_model = load_model(best_model_filename + '.h5')
+            # best_model = load_model(best_model_filename + '.h5')
 
             Y_pred_val = (best_model.predict(X_val) > 0.5)
             Y_true_val = Y_val.reshape((Y_val.shape[0], 1))
@@ -188,11 +225,12 @@ def main(argv):
             val_writer = csv.DictWriter(val_file, fieldnames=VAL_HEADER)
             val_writer.writeheader()
             val_file.flush()
-            row = {'Model': model_name, 'Samples': Y_pred_val.shape[0], 'Accuracy': '{:05.4f}'.format(accuracy), 'F1Score': '{:05.4f}'.format(f1_score_val),
-                  'Hyper-parameters': rnd_search_cv.best_params_, "Validation Set": glob.glob(dataset_folder + "/*" + '-val.hdf5')[0]}
+            row = {'Model': model_name, 'Samples': Y_pred_val.shape[0], 'Accuracy': '{:05.4f}'.format(accuracy),
+                   'F1Score': '{:05.4f}'.format(f1_score_val),
+                   'Hyper-parameters': rnd_search_cv.best_params_,
+                   "Validation Set": glob.glob(dataset_folder + "/*" + '-val.hdf5')[0]}
             val_writer.writerow(row)
             val_file.close()
-
 
             print("Best parameters: ", rnd_search_cv.best_params_)
             print("Best model path: ", best_model_filename)
@@ -244,7 +282,8 @@ def main(argv):
 
                     avg_time = avg_time / iterations
 
-                    report_results(np.squeeze(Y_true), Y_pred, packets, model_name_string, filename, avg_time,predict_writer)
+                    report_results(np.squeeze(Y_true), Y_pred, packets, model_name_string, filename, avg_time,
+                                   predict_writer)
                     predict_file.flush()
 
         predict_file.close()
@@ -264,10 +303,10 @@ def main(argv):
             cap = pyshark.FileCapture(pcap_file)
             data_source = pcap_file.split('/')[-1].strip()
         else:
-            cap =  pyshark.LiveCapture(interface=args.predict_live)
+            cap = pyshark.LiveCapture(interface=args.predict_live)
             data_source = args.predict_live
 
-        print ("Prediction on network traffic from: ", data_source)
+        print("Prediction on network traffic from: ", data_source)
 
         # load the labels, if available
         labels = parse_labels(args.dataset_type, args.attack_net, args.victim_net)
@@ -276,7 +315,7 @@ def main(argv):
         if args.model is not None and args.model.endswith('.h5'):
             model_path = args.model
         else:
-            print ("No valid model specified!")
+            print("No valid model specified!")
             exit(-1)
 
         model_filename = model_path.split('/')[-1].strip()
@@ -289,9 +328,10 @@ def main(argv):
         mins, maxs = static_min_max(time_window)
 
         while (True):
-            samples = process_live_traffic(cap, args.dataset_type, labels, max_flow_len, traffic_type="all", time_window=time_window)
+            samples = process_live_traffic(cap, args.dataset_type, labels, max_flow_len, traffic_type="all",
+                                           time_window=time_window)
             if len(samples) > 0:
-                X,Y_true,keys = dataset_to_list_of_fragments(samples)
+                X, Y_true, keys = dataset_to_list_of_fragments(samples)
                 X = np.array(normalize_and_padding(X, mins, maxs, max_flow_len))
                 if labels is not None:
                     Y_true = np.array(Y_true)
@@ -300,12 +340,13 @@ def main(argv):
 
                 X = np.expand_dims(X, axis=3)
                 pt0 = time.time()
-                Y_pred = np.squeeze(model.predict(X, batch_size=2048) > 0.5,axis=1)
+                Y_pred = np.squeeze(model.predict(X, batch_size=2048) > 0.5, axis=1)
                 pt1 = time.time()
                 prediction_time = pt1 - pt0
 
                 [packets] = count_packets_in_dataset([X])
-                report_results(np.squeeze(Y_true), Y_pred, packets, model_name_string, data_source, prediction_time,predict_writer)
+                report_results(np.squeeze(Y_true), Y_pred, packets, model_name_string, data_source, prediction_time,
+                               predict_writer)
                 predict_file.flush()
 
             elif isinstance(cap, pyshark.FileCapture) == True:
@@ -314,10 +355,12 @@ def main(argv):
 
         predict_file.close()
 
+
 def report_results(Y_true, Y_pred, packets, model_name, data_source, prediction_time, writer):
     ddos_rate = '{:04.3f}'.format(sum(Y_pred) / Y_pred.shape[0])
 
-    if Y_true is not None and len(Y_true.shape) > 0:  # if we have the labels, we can compute the classification accuracy
+    if Y_true is not None and len(
+            Y_true.shape) > 0:  # if we have the labels, we can compute the classification accuracy
         Y_true = Y_true.reshape((Y_true.shape[0], 1))
         accuracy = accuracy_score(Y_true, Y_pred)
 
@@ -329,14 +372,17 @@ def report_results(Y_true, Y_pred, packets, model_name, data_source, prediction_
         tpr = tp / (tp + fn)
 
         row = {'Model': model_name, 'Time': '{:04.3f}'.format(prediction_time), 'Packets': packets,
-               'Samples': Y_pred.shape[0], 'DDOS%': ddos_rate, 'Accuracy': '{:05.4f}'.format(accuracy), 'F1Score': '{:05.4f}'.format(f1),
-               'TPR': '{:05.4f}'.format(tpr), 'FPR': '{:05.4f}'.format(fpr), 'TNR': '{:05.4f}'.format(tnr), 'FNR': '{:05.4f}'.format(fnr), 'Source': data_source}
+               'Samples': Y_pred.shape[0], 'DDOS%': ddos_rate, 'Accuracy': '{:05.4f}'.format(accuracy),
+               'F1Score': '{:05.4f}'.format(f1),
+               'TPR': '{:05.4f}'.format(tpr), 'FPR': '{:05.4f}'.format(fpr), 'TNR': '{:05.4f}'.format(tnr),
+               'FNR': '{:05.4f}'.format(fnr), 'Source': data_source}
     else:
         row = {'Model': model_name, 'Time': '{:04.3f}'.format(prediction_time), 'Packets': packets,
                'Samples': Y_pred.shape[0], 'DDOS%': ddos_rate, 'Accuracy': "N/A", 'F1Score': "N/A",
                'TPR': "N/A", 'FPR': "N/A", 'TNR': "N/A", 'FNR': "N/A", 'Source': data_source}
-    pprint.pprint(row  )
+    pprint.pprint(row)
     writer.writerow(row)
+
 
 if __name__ == "__main__":
     main(sys.argv[1:])

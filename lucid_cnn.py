@@ -39,25 +39,28 @@ from tensorflow.keras.optimizers import Adam, SGD
 from tensorflow.keras.layers import Input, Dense, Activation, Flatten, Conv2D
 from tensorflow.keras.layers import Dropout, GlobalMaxPooling2D
 from tensorflow.keras.models import Model, Sequential, load_model, save_model
-# from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
+from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, make_scorer, precision_score, recall_score
 from sklearn.utils import shuffle
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from tensorflow.keras.wrappers.scikit_learn import KerasClassifier
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+# from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+# from skspark.model_selection import GridSearchCV
+from pyspark.ml import Pipeline
 from lucid_dataset_parser import *
-from pyspark import SparkContext, SparkConf
-from tensorflow import keras
+# from pyspark import SparkContext, SparkConf
+# from tensorflow import keras
 from skdist.distribute.search import DistGridSearchCV
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
 
 import tensorflow.keras.backend as K
 import findspark
 import os
 import sys
 
-# os.environ['PYSPARK_PYTHON'] = os.path.abspath('venv/Scripts/python.exe')
-# os.environ['PYSPARK_DRIVER_PYTHON'] = os.path.abspath('venv/Scripts/python.exe')
+os.environ['PYSPARK_PYTHON'] = sys.executable
+os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
 
-findspark.init()
+# findspark.init()
 
 tf.random.set_seed(SEED)
 K.set_image_data_format('channels_last')
@@ -67,12 +70,20 @@ config.gpu_options.allow_growth = True  # dynamically grow the memory used on th
 
 spark = (
     SparkSession
-    .builder.master('spark://127.0.0.1:7077').appName('Lucid').config(
-        "spark.driver.extraJavaOptions",
-        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED",
-    ).getOrCreate()
+    # .builder.master('local[4]').appName('Lucid')
+    .builder.master('spark://192.168.56.1:7077').appName('Lucid')
+    .config("spark.executor.memory", "1g")
+    .config("spark.driver.memory", "1g")
+    .config("spark.memory.offHeap.enabled", "true")
+    .config("spark.memory.offHeap.size", "1g")
+    .config("spark.driver.host", "192.168.56.1")
+    # .config("spark.driver.port", "49837")
+    .getOrCreate()
 )
 sc = spark.sparkContext
+
+# print(sc.getConf().toDebugString())
+# exit(1)
 
 OUTPUT_FOLDER = "./output/"
 
@@ -195,14 +206,27 @@ def main(argv):
                                                input_shape=X_train.shape[1:], kernel_col=X_train.shape[2])
             cv = args.cross_validation if args.cross_validation > 1 else [(slice(None), slice(None))]
             rnd_search_cv = DistGridSearchCV(keras_classifier, hyperparamters, sc=sc, cv=cv, refit=True,
-                                             return_train_score=True)
+                                             return_train_score=True, verbose=True, iid='deprecated')
+
+            # rnd_search_cv = GridSearchCV(keras_classifier, hyperparamters, cv=cv, refit=True,  n_jobs=1,
+            #                              return_train_score=True, verbose=True)
+
+            # rnd_search_cv = GridSearchCV(spark, keras_classifier, hyperparamters, cv=cv, refit=True, n_jobs=4,
+            #                              return_train_score=True, verbose=True)
+
+            # pipeline = Pipeline(stages=[keras_classifier])
+            # evaluator = BinaryClassificationEvaluator()
+            # rnd_search_cv = GridSearchCV(pipeline, hyperparamters, cv=cv, refit=True, n_jobs=1,
+            #                              scoring=evaluator,
+            #                              return_train_score=True, verbose=True)
 
             es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=PATIENCE)
             best_model_filename = OUTPUT_FOLDER + str(time_window) + 't-' + str(max_flow_len) + 'n-' + model_name
             mc = ModelCheckpoint(best_model_filename + '.h5', monitor='val_accuracy', mode='max', verbose=1,
                                  save_best_only=True)
             # With K-Fold cross-validation, the validation set is only used for early stopping
-            rnd_search_cv.fit(X_train, Y_train, epochs=args.epochs, validation_data=(X_val, Y_val), callbacks=[es, mc])
+            # rnd_search_cv.fit(X_train, Y_train, epochs=args.epochs, validation_data=(X_val, Y_val), callbacks=[es, mc])
+            rnd_search_cv.fit(X_train, Y_train)
 
             # With refit=True (default) GridSearchCV refits the model on the whole training set (no folds) with the best
             # hyper-parameters and makes the resulting model available as rnd_search_cv.best_estimator_.model
